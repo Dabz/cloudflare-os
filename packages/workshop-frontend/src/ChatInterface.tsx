@@ -84,6 +84,7 @@ import {
   BlueprintMerge,
   BlueprintOutput,
   MessageFormatRef,
+  EmbeddedView,
 } from "@gadgets/workshop-shared/api";
 import { composeEpochChanges, type CodeChange } from "@gadgets/workshop-shared/code-change";
 import type { ChatChangeRow, ChatContentReader } from "./features/code/otClient";
@@ -124,6 +125,7 @@ import {
 import { UnresolvedConflictsDialog } from "./features/chat/UnresolvedConflictsDialog";
 import { UiBlockCard, type UiBlockCardProps } from "./features/chat/UiBlockCard";
 import { parseInlineHtmlBlocks } from "@gadgets/workshop-shared/inline-html-blocks";
+import { embeddedViewHtml } from "@gadgets/workshop-shared/embedded-views";
 import { BlueprintProposalNotice } from "./features/blueprint-updates/BlueprintProposalNotice";
 import { appliedBlueprintMerges } from "./features/blueprint-updates/blueprintProposal";
 
@@ -1306,6 +1308,23 @@ const AgentAnswer = (
           : <UiBlockCard key={i} {...blocks} block={part} />;
     }
   });
+};
+
+/** The views a step's `executeCode` calls showed with `embedView`, drawn under its tool calls. */
+const EmbeddedViews = ({ groups, blocks }: { groups: ToolCallGroup[]; blocks: AnswerBlocks }): ReactNode =>
+  groups.flatMap(group => group.calls).flatMap(call =>
+    call.toolName === "executeCode" && call.views !== undefined
+      ? call.views.map((view, i) =>
+        <EmbeddedViewCard key={`${call.toolCallId}-${i}`} view={view} blocks={blocks} />)
+      : []);
+
+/** One view from `embedView`. */
+const EmbeddedViewCard = ({ view, blocks }: { view: EmbeddedView; blocks: AnswerBlocks }): ReactNode => {
+  // The document encodes the whole view, up to 256 KiB, so it is built once per view rather than
+  // on each of the chat's renders, which come with every streamed delta.
+  const block = useMemo((): UiBlockCardProps["block"] =>
+    ({ kind: "block", html: embeddedViewHtml(view), title: view.title }), [view]);
+  return <UiBlockCard {...blocks} block={block} />;
 };
 
 // Build a temporary object URL for inlined attachment bytes, revoking it when no longer needed.
@@ -5681,6 +5700,10 @@ function ChatInterface({
     </div>
   );
 
+  const viewCards: AnswerBlocks = {
+    onSendMessage: handleSend, sendBlockedReason, onHeightChange: keepAtBottom, scrollRoot: messagesContainerRef,
+  };
+
   // ─── main render ─────────────────────────────────────────────────────────────
   return (
     <div
@@ -6090,6 +6113,7 @@ function ChatInterface({
                                 onOpen={() => onOpenGadget(created.workpieceId)}
                               />
                             ))}
+                            <EmbeddedViews groups={entry.toolCallGroups} blocks={viewCards} />
                           </div>
                         );
                       }
@@ -6214,7 +6238,7 @@ function ChatInterface({
                                   {msg.author.type === "agent" ? (
                                     <AgentAnswer
                                       message={msg.message}
-                                      blocks={{ onSendMessage: handleSend, sendBlockedReason, onHeightChange: keepAtBottom, scrollRoot: messagesContainerRef }}
+                                      blocks={viewCards}
                                       streaming={entry.streaming === true}
                                     />
                                   ) : (
@@ -6318,6 +6342,7 @@ function ChatInterface({
                                 ))}
                               </div>
                             )}
+                            {messageToolGroups && <EmbeddedViews groups={messageToolGroups} blocks={viewCards} />}
                           </div>
                             );
                           })()
