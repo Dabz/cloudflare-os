@@ -4,7 +4,7 @@ import { CaretLeft, CaretRight } from '@phosphor-icons/react'
 import type { RpcStub } from 'capnweb'
 import type { AdminApi, AdminAuditPage } from '@gadgets/workshop-shared/api'
 import { logRpcFailure } from '../../rpcErrors'
-import type { AuditFilter } from './auditFilter'
+import { auditQueryOf, isFiltered, type AuditFilter } from './auditFilter'
 import { AuditFilters } from './AuditFilters'
 import { AUDIT_LOG_COLUMNS, AuditLogRow } from './AuditLogRow'
 
@@ -15,7 +15,8 @@ export const AUDIT_PAGE_SIZE = 50
 type Answer = { request: string } & ({ page: AdminAuditPage } | { failed: true })
 
 // Identifies a filter, so that the pages turned under one are forgotten once it changes.
-const filterKey = ({ admin, method }: AuditFilter) => JSON.stringify([admin ?? null, method ?? null])
+const filterKey = ({ admin, method, sensitivity, workspace, owner }: AuditFilter) =>
+  JSON.stringify([admin, method, sensitivity, workspace, owner].map((value) => value ?? null))
 
 /**
  * The Audit tab's log, filtered as `filter` says, one page at a time, newest first. Older pages
@@ -24,12 +25,14 @@ const filterKey = ({ admin, method }: AuditFilter) => JSON.stringify([admin ?? n
  * keeping what is shown until the new page answers; a change of filter starts again from the
  * newest page.
  */
-export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, reloads }: {
+export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, workspaceTitles, reloads }: {
   admin: RpcStub<AdminApi>
   filter: AuditFilter
   onFilterChange: (filter: AuditFilter) => void
   /** Admins to offer in the admin filter. */
   adminSuggestions: string[]
+  /** Workspaces' titles by id, to name a workspace filter whose page holds none. */
+  workspaceTitles: ReadonlyMap<string, string>
   /** Increases to load the shown page again. */
   reloads: number
 }) => {
@@ -46,10 +49,11 @@ export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, relo
   // Everything a load depends on, so that an answer to an earlier one is told apart.
   const request = JSON.stringify([key, cursor ?? null, reloads, retries])
 
-  const { admin: byAdmin, method } = filter
+  const { admin: byAdmin, method, sensitivity, workspace, owner } = filter
   useEffect(() => {
     let current = true
-    admin.listAdminAudit({ admin: byAdmin, method, cursor, limit: AUDIT_PAGE_SIZE }).then(
+    const query = auditQueryOf({ admin: byAdmin, method, sensitivity, workspace, owner })
+    admin.listAdminAudit({ ...query, cursor, limit: AUDIT_PAGE_SIZE }).then(
       (page) => { if (current) setAnswer({ request, page }) },
       (err: unknown) => {
         if (!current) return
@@ -58,7 +62,7 @@ export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, relo
       },
     )
     return () => { current = false }
-  }, [admin, byAdmin, method, cursor, request])
+  }, [admin, byAdmin, method, sensitivity, workspace, owner, cursor, request])
 
   // A page stays shown, dimmed, until the load that replaces it answers.
   const page = answer !== null && 'page' in answer ? answer.page : null
@@ -66,6 +70,11 @@ export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, relo
   const failed = answer !== null && 'failed' in answer && !busy
   const nextCursor = page?.nextCursor
   const pageNumber = cursors.length + 1
+  const filterBy = (added: AuditFilter) => onFilterChange({ ...filter, ...added })
+  const workspaceRecord = page?.records.find((record) =>
+    record.kind === 'workspace' && record.workspaceId === workspace && record.workspaceTitle)
+  const workspaceLabel = workspace === undefined ? undefined
+    : (workspaceRecord?.kind === 'workspace' ? workspaceRecord.workspaceTitle : workspaceTitles.get(workspace))
 
   // A page button is disabled on the first or the last page, and a browser drops the focus of a
   // control that becomes disabled without giving it back. So once a turn lands there, focus moves
@@ -90,7 +99,12 @@ export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, relo
 
   return (
     <div className="space-y-4">
-      <AuditFilters filter={filter} adminSuggestions={adminSuggestions} onFilterChange={onFilterChange} />
+      <AuditFilters
+        filter={filter}
+        adminSuggestions={adminSuggestions}
+        workspaceLabel={workspaceLabel}
+        onFilterChange={onFilterChange}
+      />
 
       {page === null && !failed && (
         <div className="flex justify-center py-12">
@@ -115,7 +129,8 @@ export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, relo
                   <Table.Head>Time</Table.Head>
                   <Table.Head>Admin</Table.Head>
                   <Table.Head>Action</Table.Head>
-                  <Table.Head>Changes</Table.Head>
+                  <Table.Head>Sensitivity</Table.Head>
+                  <Table.Head>Target</Table.Head>
                   <Table.Head>Via</Table.Head>
                 </Table.Row>
               </Table.Header>
@@ -124,7 +139,7 @@ export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, relo
                   ? (
                     <Table.Row>
                       <Table.Cell colSpan={AUDIT_LOG_COLUMNS} className="py-8 text-center text-kumo-subtle">
-                        {filter.admin !== undefined || filter.method !== undefined
+                        {isFiltered(filter)
                           ? 'No admin activity matches these filters.'
                           : 'No admin activity is recorded yet.'}
                       </Table.Cell>
@@ -134,7 +149,7 @@ export const AuditLog = ({ admin, filter, onFilterChange, adminSuggestions, relo
                     <AuditLogRow
                       key={`${cursor ?? ''}:${index}:${record.at.getTime()}`}
                       record={record}
-                      onAdminSelect={(selected) => onFilterChange({ ...filter, admin: selected })}
+                      onFilterBy={filterBy}
                     />
                   ))}
               </Table.Body>
