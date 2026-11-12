@@ -4,6 +4,7 @@ import {
   isInvalidGrant, mergeOAuthTokens, OAuthClient, oauthRefresh,
 } from "@gadgets/gatekeeper-kit/oauth-client";
 import type { UserAccount } from "./github";
+import { githubInstance, type Env, type GitHubInstance } from "./github-env";
 
 /**
  * A GitHub OAuth grant. An expiring grant -- the default for OAuth apps registered since August
@@ -435,7 +436,7 @@ export type ConditionalRequestOptions = {
 };
 
 const API_BASE_URL = "https://api.github.com";
-const LOGIN_BASE_URL = "https://github.com";
+const DEFAULT_INSTANCE = githubInstance({} as Env);
 const API_VERSION = "2022-11-28";
 const DEFAULT_ACCEPT = "application/vnd.github+json";
 const USER_AGENT = "Cloudflare-Gadgets";
@@ -469,8 +470,9 @@ const REPO_ROOT_PATH = /^\/repos\/[^/]+\/[^/]+$/;
 const REPO_ID_PATH = /^\/repositories\/\d+$/;
 
 /**
- * Where a request for `path` is sent: with `pin`, a path beneath the pinned repository's name goes
- * to the same path beneath its id (see PinnedRepo); every other path is sent as given.
+ * Builds a request route: with `pin`, a path beneath the pinned repository's name goes to the same
+ * path beneath its id (see PinnedRepo); every other path is sent as given. The caller replaces the
+ * base with the configured instance's API base.
  */
 function requestUrl(path: string, pin: PinnedRepo | undefined): URL {
   const url = new URL(path, API_BASE_URL);
@@ -490,11 +492,15 @@ function requestUrl(path: string, pin: PinnedRepo | undefined): URL {
  * repository's. A pinned request is addressed by id already, and beneath a repository GitHub
  * redirects only into another one, as for a transferred issue.
  */
-function redirectTarget(url: URL, location: string | null, pin: PinnedRepo | undefined): URL | undefined {
-  const moved = location === null ? null : URL.parse(location);
-  if (pin || moved?.origin !== API_BASE_URL) return undefined;
-  return REPO_ROOT_PATH.test(url.pathname) && REPO_ID_PATH.test(moved.pathname)
-    ? new URL(`${moved.pathname}${url.search}`, API_BASE_URL) : undefined;
+function redirectTarget(url: URL, location: string | null, pin: PinnedRepo | undefined,
+                        instance: GitHubInstance): URL | undefined {
+  const moved = location === null ? null : URL.parse(location, url.href);
+  const base = new URL(instance.restBase);
+  const prefix = base.pathname.replace(/\/$/, "");
+  if (pin || !moved || (moved.origin !== base.origin && moved.origin !== instance.webOrigin)
+      || !moved.pathname.startsWith(`${prefix}/`)) return undefined;
+  return REPO_ROOT_PATH.test(url.pathname.slice(prefix.length)) && REPO_ID_PATH.test(moved.pathname.slice(prefix.length))
+    ? new URL(`${moved.pathname}${url.search}`, base.origin) : undefined;
 }
 
 async function request<T>(
@@ -503,8 +509,11 @@ async function request<T>(
   options: RequestOptions = {},
   getToken?: () => Promise<string>,
   pin?: PinnedRepo,
+  instance: GitHubInstance = DEFAULT_INSTANCE,
 ): Promise<RequestResult<T>> {
-  const url = requestUrl(path, pin);
+  const route = requestUrl(path, pin);
+  const url = path === "/graphql" ? new URL(instance.graphqlUrl)
+    : new URL(`${instance.restBase}${route.pathname}${route.search}${route.hash}`);
 
   for (const [key, value] of Object.entries(options.query ?? {})) {
     if (value !== undefined) {
@@ -551,11 +560,11 @@ async function request<T>(
   const handedOff = (r: Response) => {
     const location = URL.parse(r.headers.get("location") ?? "");
     return options.externalRedirect === true && isRedirect(r.status) &&
-      location?.protocol === "https:" && location.origin !== API_BASE_URL;
+      location?.protocol === "https:" && location.origin !== new URL(instance.restBase).origin;
   };
   let response = await fetch(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
   if (isRedirect(response.status) && !handedOff(response)) {
-    const target = redirectTarget(url, response.headers.get("location"), pin);
+    const target = redirectTarget(url, response.headers.get("location"), pin, instance);
     if (target) {
       response = await fetch(target, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
     }
@@ -593,11 +602,11 @@ async function request<T>(
   };
 }
 
-function oauthClient(clientId: string, clientSecret: string): OAuthClient {
+function oauthClient(clientId: string, clientSecret: string, instance: GitHubInstance): OAuthClient {
   return new OAuthClient({
     label: "GitHub",
     client: { method: "post", id: clientId, secret: clientSecret },
-    tokenEndpoint: `${LOGIN_BASE_URL}/login/oauth/access_token`,
+    tokenEndpoint: `${instance.apiOrigin}/login/oauth/access_token`,
     headers: { "User-Agent": USER_AGENT },
     scopeSeparator: ",",
     timeoutMs: REQUEST_TIMEOUT_MS,
@@ -609,8 +618,9 @@ export async function exchangeAuthCode(
   clientId: string,
   clientSecret: string,
   redirectUri: string,
+  instance: GitHubInstance = DEFAULT_INSTANCE,
 ): Promise<GitHubOAuthGrant> {
-  const tokens = await oauthClient(clientId, clientSecret).exchangeCode({ code, redirectUri });
+  const tokens = await oauthClient(clientId, clientSecret, instance).exchangeCode({ code, redirectUri });
   const grant: GitHubOAuthGrant = {
     accessToken: tokens.accessToken,
     scopes: tokens.scopes?.map(scope => scope.trim()).filter(Boolean) ?? [],
@@ -629,8 +639,9 @@ export function refreshGitHubGrant(
   clientId: string,
   clientSecret: string,
   expiredMessage: string,
+  instance: GitHubInstance = DEFAULT_INSTANCE,
 ): RefreshCredentials<GitHubOAuthGrant> {
-  return oauthRefresh<GitHubOAuthGrant>(oauthClient(clientId, clientSecret), {
+  return oauthRefresh<GitHubOAuthGrant>(oauthClient(clientId, clientSecret, instance), {
     refreshToken: grant => grant.refreshToken,
     merge: (grant, tokens) => ({ ...mergeOAuthTokens(grant, tokens), scopes: grant.scopes }),
     isGrantDeath: error => isInvalidGrant(error)
@@ -650,6 +661,7 @@ export async function revokeOAuthToken(
   accessToken: string,
   clientId: string,
   clientSecret: string,
+  instance: GitHubInstance = DEFAULT_INSTANCE,
 ): Promise<void> {
   await request<void>(
     "DELETE",
@@ -663,7 +675,7 @@ export async function revokeOAuthToken(
       body: {
         access_token: accessToken,
       },
-    },
+    }, undefined, undefined, instance,
   );
 }
 
@@ -675,10 +687,12 @@ export async function revokeOAuthToken(
 export class GitHubApi {
   #getToken: () => Promise<string>;
   #repo?: PinnedRepo;
+  #instance: GitHubInstance;
 
-  constructor(getToken: () => Promise<string>, options: { repo?: PinnedRepo } = {}) {
+  constructor(getToken: () => Promise<string>, options: { repo?: PinnedRepo; instance?: GitHubInstance } = {}) {
     this.#getToken = getToken;
     this.#repo = options.repo;
+    this.#instance = options.instance ?? DEFAULT_INSTANCE;
   }
 
   async #request<T>(
@@ -686,7 +700,7 @@ export class GitHubApi {
     path: string,
     options: RequestOptions = {},
   ): Promise<RequestResult<T>> {
-    return await request<T>(method, path, options, this.#getToken, this.#repo);
+    return await request<T>(method, path, options, this.#getToken, this.#repo, this.#instance);
   }
 
   async #conditionalGet<T>(
@@ -1809,7 +1823,7 @@ export class GitHubApi {
    * credential-expiry handling as REST calls.
    */
   async fetchGitUploadPack(owner: string, repo: string, requestBody: Uint8Array): Promise<Response> {
-    const url = `${LOGIN_BASE_URL}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}.git/git-upload-pack`;
+    const url = `${this.#instance.apiOrigin}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}.git/git-upload-pack`;
     const response = await fetch(url, {
       method: "POST",
       headers: {
@@ -1848,7 +1862,7 @@ export class GitHubApi {
   async fetchGitReceivePack(
     owner: string, repo: string, requestBody: ReadableStream<Uint8Array>,
   ): Promise<Response> {
-    const url = `${LOGIN_BASE_URL}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}.git/git-receive-pack`;
+    const url = `${this.#instance.apiOrigin}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}.git/git-receive-pack`;
     const response = await fetch(url, {
       method: "POST",
       headers: {
@@ -1891,12 +1905,12 @@ export const CREDENTIALS_EXPIRED_MESSAGE =
 export async function withAccountApi<T>(
   account: Pick<UserAccount, "getAccessToken" | "reportTokenRejected">,
   fn: (api: GitHubApi) => Promise<T>,
-  options: { replayable?: true; repo?: PinnedRepo } = {},
+  options: { replayable?: true; repo?: PinnedRepo; instance?: GitHubInstance } = {},
 ): Promise<T> {
   for (let replays = options.replayable ? 1 : 0; ; replays--) {
     let presented: string | undefined;
     const api = new GitHubApi(async () => (presented = await account.getAccessToken()),
-      { repo: options.repo });
+      { repo: options.repo, instance: options.instance });
     try {
       return await fn(api);
     } catch (error) {
