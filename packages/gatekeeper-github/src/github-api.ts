@@ -562,6 +562,7 @@ async function request<T>(
     return options.externalRedirect === true && isRedirect(r.status) &&
       location?.protocol === "https:" && location.origin !== new URL(instance.restBase).origin;
   };
+  const fetch = instance.fetch ?? globalThis.fetch;
   let response = await fetch(url, { ...init, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS) });
   if (isRedirect(response.status) && !handedOff(response)) {
     const target = redirectTarget(url, response.headers.get("location"), pin, instance);
@@ -610,6 +611,7 @@ function oauthClient(clientId: string, clientSecret: string, instance: GitHubIns
     headers: { "User-Agent": USER_AGENT },
     scopeSeparator: ",",
     timeoutMs: REQUEST_TIMEOUT_MS,
+    fetch: instance.fetch,
   });
 }
 
@@ -1824,7 +1826,7 @@ export class GitHubApi {
    */
   async fetchGitUploadPack(owner: string, repo: string, requestBody: Uint8Array): Promise<Response> {
     const url = `${this.#instance.apiOrigin}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}.git/git-upload-pack`;
-    const response = await fetch(url, {
+    const response = await (this.#instance.fetch ?? globalThis.fetch)(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/x-git-upload-pack-request",
@@ -1863,7 +1865,7 @@ export class GitHubApi {
     owner: string, repo: string, requestBody: ReadableStream<Uint8Array>,
   ): Promise<Response> {
     const url = `${this.#instance.apiOrigin}/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}.git/git-receive-pack`;
-    const response = await fetch(url, {
+    const response = await (this.#instance.fetch ?? globalThis.fetch)(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/x-git-receive-pack-request",

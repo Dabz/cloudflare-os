@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   GitHubApi,
   exchangeAuthCode,
+  refreshGitHubGrant,
   revokeOAuthToken,
   type GitHubIssueResponse,
 } from "../src/github-api";
@@ -64,6 +65,78 @@ describe("GitHub Enterprise endpoints", () => {
     vi.stubGlobal("fetch", fetch);
     await expect(new GitHubApi(async () => "token", { instance }).getRepo("acme", "old")).rejects.toThrow(/not followed/);
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("GitHub VPC transport", () => {
+  it("uses the binding for OAuth, REST, GraphQL, git and token revocation", async () => {
+    const requests: { url: string; init?: RequestInit }[] = [];
+    const binding = {
+      fetch: vi.fn(async function (this: { fetch: unknown }, input: string | URL, init?: RequestInit) {
+        expect(this).toBe(binding);
+        const url = String(input);
+        requests.push({ url, init });
+        if (url.endsWith("/login/oauth/access_token")) {
+          return Response.json({ access_token: "oauth-token", refresh_token: "new-refresh", scope: "repo" });
+        }
+        if (url.endsWith("/api/graphql")) return Response.json({ data: { viewer: { login: "octo" } } });
+        return Response.json({ id: 42 });
+      }),
+    };
+    const globalFetch = vi.fn();
+    vi.stubGlobal("fetch", globalFetch);
+    const instance = githubInstance({ GITHUB_URL: "https://git.example.com", VPC_GITHUB: binding });
+    const api = new GitHubApi(async () => "token", { instance, repo: { owner: "acme", repo: "app", id: 42 } });
+    await api.getRepo("acme", "app");
+    await api.graphql("query { viewer { login } }", {});
+    await api.fetchGitUploadPack("acme", "app", new Uint8Array());
+    await api.fetchGitReceivePack("acme", "app", new ReadableStream());
+    await exchangeAuthCode("code", "client", "secret", "https://workshop.example/oauth", instance);
+    await refreshGitHubGrant("client", "secret", "expired", instance)({ accessToken: "old", refreshToken: "refresh", scopes: ["repo"] });
+    await revokeOAuthToken("token", "client", "secret", instance);
+
+    expect(requests.map(({ url }) => url)).toEqual([
+      "https://git.example.com/api/v3/repositories/42", "https://git.example.com/api/graphql",
+      "https://git.example.com/acme/app.git/git-upload-pack", "https://git.example.com/acme/app.git/git-receive-pack",
+      "https://git.example.com/login/oauth/access_token", "https://git.example.com/login/oauth/access_token",
+      "https://git.example.com/api/v3/applications/client/token",
+    ]);
+    expect(requests[0].init?.headers).toBeInstanceOf(Headers);
+    expect((requests[0].init?.headers as Headers).get("authorization")).toBe("Bearer token");
+    expect(globalFetch).not.toHaveBeenCalled();
+  });
+
+  it("does not fall back to public fetch when the binding fails", async () => {
+    const globalFetch = vi.fn();
+    vi.stubGlobal("fetch", globalFetch);
+    const instance = githubInstance({ GITHUB_URL: "https://git.example.com",
+      VPC_GITHUB: { fetch: async () => { throw new Error("VPC unavailable"); } } });
+    await expect(new GitHubApi(async () => "token", { instance }).getRepo("acme", "app"))
+      .rejects.toThrow("VPC unavailable");
+    expect(globalFetch).not.toHaveBeenCalled();
+  });
+
+  it("follows allowed repository redirects through the binding", async () => {
+    const fetch = vi.fn(async (input: string | URL) => String(input).endsWith("/repos/acme/old")
+      ? new Response(null, { status: 301, headers: { location: "https://git.example.com/api/v3/repositories/42" } })
+      : Response.json({ id: 42 }));
+    const instance = githubInstance({ GITHUB_URL: "https://git.example.com", VPC_GITHUB: { fetch } });
+    await new GitHubApi(async () => "token", { instance }).getRepo("acme", "old");
+    expect(fetch.mock.calls.map(([url]) => String(url))).toEqual([
+      "https://git.example.com/api/v3/repos/acme/old", "https://git.example.com/api/v3/repositories/42",
+    ]);
+  });
+
+  it("downloads an external job log without routing it through the instance binding", async () => {
+    const binding = { fetch: vi.fn() };
+    const globalFetch = vi.fn(async (_input: string | URL, _init?: RequestInit) => new Response("log"));
+    vi.stubGlobal("fetch", globalFetch);
+    const instance = githubInstance({ GITHUB_URL: "https://git.example.com", VPC_GITHUB: binding });
+    const stream = await new GitHubApi(async () => "token", { instance }).downloadJobLog("https://blob.example/log");
+    expect(await new Response(stream).text()).toBe("log");
+    expect(binding.fetch).not.toHaveBeenCalled();
+    expect(globalFetch).toHaveBeenCalledOnce();
+    expect(globalFetch.mock.calls[0][0]).toBe("https://blob.example/log");
   });
 });
 

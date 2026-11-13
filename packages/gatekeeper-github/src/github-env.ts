@@ -11,6 +11,8 @@ export type Env = Cloudflare.Env & {
   GITHUB_URL?: string;
   /** Worker-facing origin when different from GITHUB_URL. */
   GITHUB_API_URL?: string;
+  /** Optional Workers VPC binding for requests to the GitHub instance. */
+  VPC_GITHUB?: Pick<Fetcher, "fetch">;
   /**
    * The public origin GitHub delivers webhooks to, such as `https://gadgets.example.com`: the
    * deployment's own, or a tunnel's in local development. GitHub hooks are refused while it is
@@ -35,20 +37,27 @@ function instanceOrigin(name: "GITHUB_URL" | "GITHUB_API_URL", raw: string): str
 }
 
 /** The origin users visit and resource URLs name. */
-export function instanceUrl(env: Env): string {
+export function instanceUrl(env: Pick<Env, "GITHUB_URL">): string {
   return instanceOrigin("GITHUB_URL", env.GITHUB_URL || "https://github.com");
 }
 
-/** Worker-facing endpoints for the configured instance. */
-export function githubInstance(env: Env) {
+/** Worker-facing endpoints and optional private transport for the configured instance. */
+export function githubInstance(env: Pick<Env, "GITHUB_URL" | "GITHUB_API_URL" | "VPC_GITHUB">): GitHubInstance {
   const webOrigin = instanceUrl(env);
   const apiOrigin = env.GITHUB_API_URL ? instanceOrigin("GITHUB_API_URL", env.GITHUB_API_URL) : webOrigin;
   const cloud = webOrigin === "https://github.com" && !env.GITHUB_API_URL;
   return { webOrigin, apiOrigin, restBase: cloud ? "https://api.github.com" : `${apiOrigin}/api/v3`,
-    graphqlUrl: cloud ? "https://api.github.com/graphql" : `${apiOrigin}/api/graphql` };
+    graphqlUrl: cloud ? "https://api.github.com/graphql" : `${apiOrigin}/api/graphql`,
+    ...(env.VPC_GITHUB ? { fetch: env.VPC_GITHUB.fetch.bind(env.VPC_GITHUB) } : {}) };
 }
 
-export type GitHubInstance = ReturnType<typeof githubInstance>;
+export type GitHubInstance = {
+  webOrigin: string;
+  apiOrigin: string;
+  restBase: string;
+  graphqlUrl: string;
+  fetch?: (input: string | URL, init?: RequestInit) => Promise<Response>;
+};
 
 /** Where browsers reach this worker, e.g. `https://gadgets.example.com/gatekeeper/github`. */
 export function getBaseUrl(env: Env): string {

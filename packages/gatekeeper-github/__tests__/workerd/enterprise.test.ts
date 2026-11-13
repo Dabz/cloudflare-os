@@ -15,12 +15,13 @@ beforeEach(() => {
 afterEach(() => {
   delete (env as Env).GITHUB_URL;
   delete (env as Env).GITHUB_API_URL;
+  delete (env as Env).VPC_GITHUB;
   vi.unstubAllGlobals();
 });
 
-it("connects through Enterprise OAuth and reads a repository on the worker-facing origin", async () => {
+it.each([false, true])("connects and reads a repository with VPC binding: %s", async useVpc => {
   const requests: Request[] = [];
-  vi.stubGlobal("fetch", async (input: RequestInfo | URL, init?: RequestInit) => {
+  const fetchGitHub = async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = new Request(input, init);
     requests.push(request);
     expect(new URL(request.url).origin).toBe("https://api.example.com");
@@ -33,7 +34,10 @@ it("connects through Enterprise OAuth and reads a repository on the worker-facin
         visibility: "private", private: true, default_branch: "main" });
     }
     throw new Error(`Unexpected request ${request.url}`);
-  });
+  };
+  const publicFetch = vi.fn(useVpc ? () => { throw new Error("unexpected public fetch"); } : fetchGitHub);
+  vi.stubGlobal("fetch", publicFetch);
+  if (useVpc) (env as Env).VPC_GITHUB = { fetch: fetchGitHub };
   const id = env.USER_ACCOUNT.newUniqueId();
   const account = env.USER_ACCOUNT.get(id);
   const initiationNonce = "a".repeat(64);
@@ -55,11 +59,13 @@ it("connects through Enterprise OAuth and reads a repository on the worker-facin
   expect(await hooks().resourcePatternFor("https://github.com/acme/app")).toHaveProperty("error");
   const props = { userObjectId: id.toString(), instance: "https://git.example.com", resourceKind: "repo" as const,
     owner: "acme", repo: "app" };
-  expect(await hooks().repoMetadata("repo", props)).toMatchObject({ ok: { url: "https://git.example.com/acme/app" } });
+  const facet = `repo-${useVpc}`;
+  expect(await hooks().repoMetadata(facet, props)).toMatchObject({ ok: { url: "https://git.example.com/acme/app" } });
   expect(requests.map(request => new URL(request.url).pathname)).toEqual([
     "/login/oauth/access_token", "/api/v3/user", "/api/v3/repos/acme/app", "/api/v3/repositories/42",
   ]);
   expect(requests[1].headers.get("authorization")).toBe("Bearer enterprise-token");
+  if (useVpc) expect(publicFetch).not.toHaveBeenCalled();
   const observations: string[][] = [];
   class Queue extends RpcTarget {
     async authorizeObservation(description: { subresources: string[] }): Promise<void> {
@@ -67,13 +73,13 @@ it("connects through Enterprise OAuth and reads a repository on the worker-facin
     }
   }
   using queue = new RpcStub(new Queue());
-  expect(await hooks().sessionRead("repo", props, queue as never, [{ method: "getMetadata" }]))
+  expect(await hooks().sessionRead(facet, props, queue as never, [{ method: "getMetadata" }]))
     .toMatchObject({ ok: { url: "https://git.example.com/acme/app" } });
   const requirement = repoSubresourceId(42, "https://git.example.com");
   expect(observations).toEqual([[requirement]]);
-  expect(await hooks().verifyObservers("repo", props, [{ id: "observer", userObjectId: id.toString() }], [requirement]))
+  expect(await hooks().verifyObservers(facet, props, [{ id: "observer", userObjectId: id.toString() }], [requirement]))
     .toEqual({ ok: { allowedObserverIds: ["observer"] } });
-  expect(await hooks().verifyObservers("repo", props, [{ id: "observer", userObjectId: id.toString() }], ["repo/42"]))
+  expect(await hooks().verifyObservers(facet, props, [{ id: "observer", userObjectId: id.toString() }], ["repo/42"]))
     .toHaveProperty("error");
 });
 
