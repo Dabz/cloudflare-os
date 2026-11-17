@@ -228,12 +228,12 @@ Enterprise instance must also reach `WEBHOOK_ORIGIN`.
 ### Private access with Workers VPC
 
 To reach a private GitHub Enterprise Server, create an HTTP [Workers VPC Service](https://developers.cloudflare.com/workers-vpc/configuration/vpc-services/)
-for the server and attach it to the GitHub gatekeeper Worker as `VPC_GITHUB`. The binding in the
+for the server and attach it to the GitHub gatekeeper Worker as `GITHUB_VPC`. The binding in the
 deployed Wrangler configuration looks like:
 
 ```jsonc
 "vpc_services": [
-  { "binding": "VPC_GITHUB", "service_id": "<VPC_SERVICE_ID>", "remote": true }
+  { "binding": "GITHUB_VPC", "service_id": "<VPC_SERVICE_ID>", "remote": true }
 ]
 ```
 
@@ -246,9 +246,9 @@ GitHub token.
 `GITHUB_URL` still names the browser-facing origin, which users must reach separately, such as
 through VPN or WARP. `GITHUB_API_URL` names the Worker-facing HTTPS origin; its hostname supplies
 the Host header and TLS server name, while the VPC Service selects the actual host and port. Use a
-hostname whose certificate the tunnel can verify. The starter's `gatekeepers.github.vars` sets the
-URLs but does not configure VPC bindings; its deployment configuration must be extended to add the
-binding to the GitHub Worker. Do not edit the generated `wrangler.jsonc` by hand.
+hostname whose certificate the tunnel can verify. In the starter, set the URL vars in
+`gatekeepers.github.vars` and the VPC Service ID in `gatekeepers.github.vpcServices`; do not edit
+the generated `wrangler.jsonc` by hand.
 
 One deployment uses one instance. Accounts and bindings are tied to their original instance;
 changing `GITHUB_URL` does not migrate them and they refuse access until the original URL is

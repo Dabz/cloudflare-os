@@ -12,7 +12,7 @@ export type Env = Cloudflare.Env & {
   /** Worker-facing origin when different from GITHUB_URL. */
   GITHUB_API_URL?: string;
   /** Optional Workers VPC binding for requests to the GitHub instance. */
-  VPC_GITHUB?: Pick<Fetcher, "fetch">;
+  GITHUB_VPC?: Pick<Fetcher, "fetch">;
   /**
    * The public origin GitHub delivers webhooks to, such as `https://gadgets.example.com`: the
    * deployment's own, or a tunnel's in local development. GitHub hooks are refused while it is
@@ -42,13 +42,13 @@ export function instanceUrl(env: Pick<Env, "GITHUB_URL">): string {
 }
 
 /** Worker-facing endpoints and optional private transport for the configured instance. */
-export function githubInstance(env: Pick<Env, "GITHUB_URL" | "GITHUB_API_URL" | "VPC_GITHUB">): GitHubInstance {
+export function githubInstance(env: Pick<Env, "GITHUB_URL" | "GITHUB_API_URL" | "GITHUB_VPC">): GitHubInstance {
   const webOrigin = instanceUrl(env);
   const apiOrigin = env.GITHUB_API_URL ? instanceOrigin("GITHUB_API_URL", env.GITHUB_API_URL) : webOrigin;
   const cloud = webOrigin === "https://github.com" && !env.GITHUB_API_URL;
   return { webOrigin, apiOrigin, restBase: cloud ? "https://api.github.com" : `${apiOrigin}/api/v3`,
     graphqlUrl: cloud ? "https://api.github.com/graphql" : `${apiOrigin}/api/graphql`,
-    ...(env.VPC_GITHUB ? { fetch: env.VPC_GITHUB.fetch.bind(env.VPC_GITHUB) } : {}) };
+    ...(env.GITHUB_VPC ? { fetch: env.GITHUB_VPC.fetch.bind(env.GITHUB_VPC) } : {}) };
 }
 
 export type GitHubInstance = {

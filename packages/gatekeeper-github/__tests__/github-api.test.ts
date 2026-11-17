@@ -85,7 +85,7 @@ describe("GitHub VPC transport", () => {
     };
     const globalFetch = vi.fn();
     vi.stubGlobal("fetch", globalFetch);
-    const instance = githubInstance({ GITHUB_URL: "https://git.example.com", VPC_GITHUB: binding });
+    const instance = githubInstance({ GITHUB_URL: "https://git.example.com", GITHUB_VPC: binding });
     const api = new GitHubApi(async () => "token", { instance, repo: { owner: "acme", repo: "app", id: 42 } });
     await api.getRepo("acme", "app");
     await api.graphql("query { viewer { login } }", {});
@@ -110,7 +110,7 @@ describe("GitHub VPC transport", () => {
     const globalFetch = vi.fn();
     vi.stubGlobal("fetch", globalFetch);
     const instance = githubInstance({ GITHUB_URL: "https://git.example.com",
-      VPC_GITHUB: { fetch: async () => { throw new Error("VPC unavailable"); } } });
+      GITHUB_VPC: { fetch: async () => { throw new Error("VPC unavailable"); } } });
     await expect(new GitHubApi(async () => "token", { instance }).getRepo("acme", "app"))
       .rejects.toThrow("VPC unavailable");
     expect(globalFetch).not.toHaveBeenCalled();
@@ -120,7 +120,7 @@ describe("GitHub VPC transport", () => {
     const fetch = vi.fn(async (input: string | URL) => String(input).endsWith("/repos/acme/old")
       ? new Response(null, { status: 301, headers: { location: "https://git.example.com/api/v3/repositories/42" } })
       : Response.json({ id: 42 }));
-    const instance = githubInstance({ GITHUB_URL: "https://git.example.com", VPC_GITHUB: { fetch } });
+    const instance = githubInstance({ GITHUB_URL: "https://git.example.com", GITHUB_VPC: { fetch } });
     await new GitHubApi(async () => "token", { instance }).getRepo("acme", "old");
     expect(fetch.mock.calls.map(([url]) => String(url))).toEqual([
       "https://git.example.com/api/v3/repos/acme/old", "https://git.example.com/api/v3/repositories/42",
@@ -131,7 +131,7 @@ describe("GitHub VPC transport", () => {
     const binding = { fetch: vi.fn() };
     const globalFetch = vi.fn(async (_input: string | URL, _init?: RequestInit) => new Response("log"));
     vi.stubGlobal("fetch", globalFetch);
-    const instance = githubInstance({ GITHUB_URL: "https://git.example.com", VPC_GITHUB: binding });
+    const instance = githubInstance({ GITHUB_URL: "https://git.example.com", GITHUB_VPC: binding });
     const stream = await new GitHubApi(async () => "token", { instance }).downloadJobLog("https://blob.example/log");
     expect(await new Response(stream).text()).toBe("log");
     expect(binding.fetch).not.toHaveBeenCalled();

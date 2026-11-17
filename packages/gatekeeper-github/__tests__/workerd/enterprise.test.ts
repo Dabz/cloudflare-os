@@ -15,7 +15,7 @@ beforeEach(() => {
 afterEach(() => {
   delete (env as Env).GITHUB_URL;
   delete (env as Env).GITHUB_API_URL;
-  delete (env as Env).VPC_GITHUB;
+  delete (env as Env).GITHUB_VPC;
   vi.unstubAllGlobals();
 });
 
@@ -37,7 +37,7 @@ it.each([false, true])("connects and reads a repository with VPC binding: %s", a
   };
   const publicFetch = vi.fn(useVpc ? () => { throw new Error("unexpected public fetch"); } : fetchGitHub);
   vi.stubGlobal("fetch", publicFetch);
-  if (useVpc) (env as Env).VPC_GITHUB = { fetch: fetchGitHub };
+  if (useVpc) (env as Env).GITHUB_VPC = { fetch: fetchGitHub };
   const id = env.USER_ACCOUNT.newUniqueId();
   const account = env.USER_ACCOUNT.get(id);
   const initiationNonce = "a".repeat(64);
